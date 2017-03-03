@@ -31,6 +31,7 @@ static ssize_t loop_write(int fd, const void*data, size_t size) {
         ret += r;
         data = (const uint8_t*) data + r;
         size -= (size_t) r;
+       // close(fd);
      //   printf("end\n");
 
     }
@@ -50,7 +51,7 @@ int main(int argc, char*argv[]) {
     pa_simple *s = NULL;
     int fd,ret = 1;
     //int fd = open(argv[1],O_CREAT | O_APPEND | O_RDWR);
-    if ((fd = open(argv[1], O_CREAT | O_RDWR | O_APPEND)) < 0) {
+    if ((fd = open(argv[1], O_CREAT | O_WRONLY | O_APPEND | O_TRUNC)) < 0) {
         fprintf(stderr, __FILE__": open() failed: %s\n", strerror(errno));
         goto finish;
 
