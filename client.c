@@ -40,7 +40,7 @@ void nw_handler(int signo){          //signal handler
 
 int main(int argc, char *argv[])    //usage: <./name><ip><port no>
 {
-    int  n = 0,i;
+   // int  n = 0,i;
     struct sockaddr_in serv_addr;
 
     /* The Sample format to use */
@@ -92,10 +92,19 @@ int main(int argc, char *argv[])    //usage: <./name><ip><port no>
         return 1;
 
     }
-    while(1){
+    printf("connected\n");
+
+    /* Create a new playback stream */
+    if (!(s = pa_simple_new(NULL, argv[0], PA_STREAM_PLAYBACK, NULL, "playback", &ss, NULL, NULL, &error))) {
+        fprintf(stderr, __FILE__": pa_simple_new() failed: %s\n", pa_strerror(error));
+        goto finish;
+
+    }
 
         uint8_t buf[BUFSIZE];
         ssize_t r;
+    while(1){
+
 
 #if 0
         pa_usec_t latency;
@@ -118,7 +127,7 @@ int main(int argc, char *argv[])    //usage: <./name><ip><port no>
             goto finish;
 
         }
-
+       // printf("read completed\n");
         /* ... and play it */
         if (pa_simple_write(s, buf, (size_t) r, &error) < 0) {
             fprintf(stderr, __FILE__": pa_simple_write() failed: %s\n", pa_strerror(error));
