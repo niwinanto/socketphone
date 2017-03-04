@@ -105,7 +105,6 @@ int main(int argc, char *argv[])    //usage: <./name><ip><port no>
         ssize_t r;
     while(1){
 
-
 #if 0
         pa_usec_t latency;
 
