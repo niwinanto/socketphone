@@ -1,0 +1,5 @@
+This project gave me insight to play around with hardware and its abstract APIs.
+I learned how to program from the man pages and documents.
+The difficulty I faced is converting the documented code to my application code. Some places I missed small small things.
+But error messages helped me a lot to find the issues. Also I used normal printf to debug few issues.
+

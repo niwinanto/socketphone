@@ -1,0 +1,4 @@
+1-->We can implement some of the noise reduction algorithms/methods.
+2-->We can encrypt the data send over socket to deal with privacy issues.
+3-->We can make a user friendly GUI.
+4-->We can implement some of the compression techniques to efficiency. 
