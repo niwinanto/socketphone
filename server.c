@@ -14,14 +14,21 @@
 #include <time.h>
 #include <fcntl.h>
 #include <signal.h>
-
+#include <sys/timerfd.h>
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <pulse/gccmacro.h>
 
+#define CLOCKID CLOCK_REALTIME
+#define SIG SIGRTMIN
+
+#define errExit(msg)    do { perror(msg); exit(EXIT_FAILURE); \
+} while (0)
 int listenfd = 0,connfd = 0;
 #define BUFSIZE 1024
-
+pa_simple *s = NULL;
+int pulse_error;
+int pulse_rdwt();
 /* A simple routine calling UNIX write() in a loop */
 static ssize_t loop_write(int fd, const void*data, size_t size) {
     ssize_t ret = 0;
@@ -64,18 +71,52 @@ void nw_handler(int signo){         //signal handler
     }
 }
 
+static void pulse_handler(int sig, siginfo_t *si, void *uc)
+{
+    /* Note: calling printf() from a signal handler is not
+     *               strictly correct, since printf() is not async-signal-safe;
+     *                             see signal(7) */
+
+//    printf("Caught signal %d\n", sig);
+    pulse_rdwt();
+    //signal(sig, SIG_IGN);
+
+}
+
+int pulse_rdwt(){
+
+    uint8_t buf[BUFSIZE];
+
+    /* Record some data ... */
+    if (pa_simple_read(s, buf, sizeof(buf), &pulse_error) < 0) {
+        fprintf(stderr, __FILE__": pa_simple_read() failed: %s\n", pa_strerror(pulse_error));
+        exit(1);
+
+    }
+
+    /* And write it to STDOUT */
+    if (loop_write(connfd, buf, sizeof(buf)) != sizeof(buf)) {
+        fprintf(stderr, __FILE__": write() failed: %s\n", strerror(errno));
+        exit(1);
+
+    }
+}
+
+
 int main(int argc, char *argv[])    //usage is <./name> <port no>
 {
     struct sockaddr_in serv_addr;
-
-    /* The sample type to use */
+    timer_t timerid;
+    struct sigevent sev;
+    struct itimerspec its;
+    long long freq_nanosecs;
+    sigset_t mask;
+    struct sigaction sa;
     static const pa_sample_spec ss = {
         .format = PA_SAMPLE_S16LE,
         .rate = 44100,
         .channels = 2
-
     };
-    pa_simple *s = NULL;
     int fd,n,error,ret = 1;
 
     if(argc != 2)           //check for proper command line arguments
@@ -84,6 +125,38 @@ int main(int argc, char *argv[])    //usage is <./name> <port no>
         return 1;
 
     }
+
+    sa.sa_flags = SA_SIGINFO;
+    sa.sa_sigaction = pulse_handler;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIG, &sa, NULL) == -1)
+        errExit("sigaction");
+
+    /* Block timer signal temporarily */
+
+    printf("Blocking signal %d\n", SIG);
+    sigemptyset(&mask);
+    sigaddset(&mask, SIG);
+    if (sigprocmask(SIG_SETMASK, &mask, NULL) == -1)
+        errExit("sigprocmask");
+
+    /* Create the timer */
+
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIG;
+    sev.sigev_value.sival_ptr = &timerid;
+    if (timer_create(CLOCKID, &sev, &timerid) == -1)
+        errExit("timer_create");
+
+    printf("timer ID is 0x%lx\n", (long) timerid);
+
+    /* Start the timer */
+
+    freq_nanosecs = 100;
+    its.it_value.tv_sec = freq_nanosecs / 1000000000;
+    its.it_value.tv_nsec = freq_nanosecs % 1000000000;
+    its.it_interval.tv_sec = its.it_value.tv_sec;
+    its.it_interval.tv_nsec = its.it_value.tv_nsec;
 
     if(signal(SIGINT,nw_handler) == SIG_ERR)    //signal handler call
         printf("cant acces SIDINT");
@@ -112,23 +185,13 @@ int main(int argc, char *argv[])    //usage is <./name> <port no>
             goto finish;
 
         }
+        if (timer_settime(timerid, 0, &its, NULL) == -1)
+            errExit("timer_settime");
+        if (sigprocmask(SIG_UNBLOCK, &mask, NULL) == -1)
+            errExit("sigprocmask");
+
         while(1){
 
-            uint8_t buf[BUFSIZE];
-
-            /* Record some data ... */
-            if (pa_simple_read(s, buf, sizeof(buf), &error) < 0) {
-                fprintf(stderr, __FILE__": pa_simple_read() failed: %s\n", pa_strerror(error));
-                goto finish;
-
-            }
-
-            /* And write it to STDOUT */
-            if (loop_write(connfd, buf, sizeof(buf)) != sizeof(buf)) {
-                fprintf(stderr, __FILE__": write() failed: %s\n", strerror(errno));
-                goto finish;
-
-            }
             // write(connfd, sendBuff, strlen(sendBuff)+1);        //write to the client socket
 
 #if 0

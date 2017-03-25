@@ -13,14 +13,20 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include<signal.h>
+#include <time.h>
 
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <pulse/gccmacro.h>
 
+#define CLOCKID CLOCK_REALTIME
+#define SIG SIGRTMIN
+
+#define errExit(msg)    do { perror(msg); exit(EXIT_FAILURE); \
+} while (0)
 #define BUFSIZE 1024
 int sockfd = 0;
-
+pa_simple *l = NULL;
 
 void nw_handler(int signo){          //signal handler
     char a[2];
@@ -37,12 +43,48 @@ void nw_handler(int signo){          //signal handler
     }
 }
 
+int pulse_rdply(){
+        int error;
+        uint8_t buf[BUFSIZE];
+        ssize_t r;
+        /* Read some data ... */
+        if ((r = read(sockfd, buf, sizeof(buf))) < 0) {
+            fprintf(stderr, __FILE__": read() failed: %s\n", strerror(errno));
+            exit(0);
+
+        }
+        //printf("read completed%ld\n",r);
+        /* ... and play it */
+        if (pa_simple_write(l, buf, (size_t) r, &error) < 0) {
+            fprintf(stderr, __FILE__": pa_simple_write() failed: %s\n", pa_strerror(error));
+            exit(0);
+
+        }
+}
+
+
+static void pulse_handler(int sig, siginfo_t *si, void *uc)
+{
+    /* Note: calling printf() from a signal handler is not
+     *               strictly correct, since printf() is not async-signal-safe;
+     *                             see signal(7) */
+
+//    printf("Caught signal %d\n", sig);
+    pulse_rdply();
+    //signal(sig, SIG_IGN);
+
+}
 
 int main(int argc, char *argv[])    //usage: <./name><ip><port no>
 {
    // int  n = 0,i;
     struct sockaddr_in serv_addr;
-
+    timer_t timerid;
+    struct sigevent sev;
+    struct itimerspec its;
+    long long freq_nanosecs;
+    sigset_t mask;
+    struct sigaction sa;
     /* The Sample format to use */
     static const pa_sample_spec ss = {
         .format = PA_SAMPLE_S16LE,
@@ -62,6 +104,38 @@ int main(int argc, char *argv[])    //usage: <./name><ip><port no>
         return 1;
 
     }
+
+    sa.sa_flags = SA_SIGINFO;
+    sa.sa_sigaction = pulse_handler;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIG, &sa, NULL) == -1)
+        errExit("sigaction");
+
+    /* Block timer signal temporarily */
+
+    printf("Blocking signal %d\n", SIG);
+    sigemptyset(&mask);
+    sigaddset(&mask, SIG);
+    if (sigprocmask(SIG_SETMASK, &mask, NULL) == -1)
+        errExit("sigprocmask");
+
+    /* Create the timer */
+
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIG;
+    sev.sigev_value.sival_ptr = &timerid;
+    if (timer_create(CLOCKID, &sev, &timerid) == -1)
+        errExit("timer_create");
+
+    printf("timer ID is 0x%lx\n", (long) timerid);
+
+    /* Start the timer */
+
+    freq_nanosecs = 100;
+    its.it_value.tv_sec = freq_nanosecs / 1000000000;
+    its.it_value.tv_nsec = freq_nanosecs % 1000000000;
+    its.it_interval.tv_sec = its.it_value.tv_sec;
+    its.it_interval.tv_nsec = its.it_value.tv_nsec;
 
     if(signal(SIGINT,nw_handler) == SIG_ERR)    //signal handler callback functio
         printf("cant acces SIDINT");
@@ -95,15 +169,18 @@ int main(int argc, char *argv[])    //usage: <./name><ip><port no>
     printf("connected\n");
 
     /* Create a new playback stream */
-    if (!(s = pa_simple_new(NULL, argv[0], PA_STREAM_PLAYBACK, NULL, "playback", &ss, NULL, NULL, &error))) {
+    if (!(l = pa_simple_new(NULL, argv[0], PA_STREAM_PLAYBACK, NULL, "playback", &ss, NULL, NULL, &error))) {
         fprintf(stderr, __FILE__": pa_simple_new() failed: %s\n", pa_strerror(error));
         goto finish;
 
     }
 
-        uint8_t buf[BUFSIZE];
-        ssize_t r;
-    while(1){
+        if (timer_settime(timerid, 0, &its, NULL) == -1)
+            errExit("timer_settime");
+        if (sigprocmask(SIG_UNBLOCK, &mask, NULL) == -1)
+            errExit("sigprocmask");
+
+        while(1){
 
 #if 0
         pa_usec_t latency;
@@ -117,26 +194,29 @@ int main(int argc, char *argv[])    //usage: <./name><ip><port no>
         fprintf(stderr, "%0.0f usec    \r", (float)latency);
 #endif
 
+#if 0
+        uint8_t buf[BUFSIZE];
+        ssize_t r;
         /* Read some data ... */
-        if ((r = read(sockfd, buf, sizeof(buf))) <= 0) {
-            if (r == 0) /* EOF */
-                break;
-
+        if ((r = read(sockfd, buf, sizeof(buf))) < 0) {
             fprintf(stderr, __FILE__": read() failed: %s\n", strerror(errno));
-            goto finish;
+            exit(0);
 
         }
+        printf("read completed%ld\n",r);
        // printf("read completed\n");
         /* ... and play it */
         if (pa_simple_write(s, buf, (size_t) r, &error) < 0) {
             fprintf(stderr, __FILE__": pa_simple_write() failed: %s\n", pa_strerror(error));
-            goto finish;
+            printf("hi");
+            exit(0);
 
         }
-    }
+#endif
+        }
 
     /* Make sure that every single sample was played */
-    if (pa_simple_drain(s, &error) < 0) {
+    if (pa_simple_drain(l, &error) < 0) {
         fprintf(stderr, __FILE__": pa_simple_drain() failed: %s\n", pa_strerror(error));
         goto finish;
 
