@@ -14,6 +14,7 @@
 #include <arpa/inet.h>
 #include<signal.h>
 #include <time.h>
+#include "g711.c"
 
 #include <pulse/simple.h>
 #include <pulse/error.h>
@@ -44,22 +45,37 @@ void nw_handler(int signo){          //signal handler
 }
 
 int pulse_rdply(){
-        int error;
-        uint8_t buf[BUFSIZE];
+    int error,i;
+    uint8_t buf[BUFSIZE];
+    uint16_t inmsg[BUFSIZE],outbuffer[BUFSIZE];
+    uint8_t outmsg[BUFSIZE],inbuffer[BUFSIZE];
         ssize_t r;
-        /* Read some data ... */
-        if ((r = read(sockfd, buf, sizeof(buf))) < 0) {
-            fprintf(stderr, __FILE__": read() failed: %s\n", strerror(errno));
-            exit(0);
+    /* Read some data ... */
+    if ((r = read(sockfd, inbuffer, sizeof(inbuffer))) < 0) {
+        fprintf(stderr, __FILE__": read() failed: %s\n", strerror(errno));
+        exit(0);
 
-        }
-        //printf("read completed%ld\n",r);
-        /* ... and play it */
-        if (pa_simple_write(l, buf, (size_t) r, &error) < 0) {
-            fprintf(stderr, __FILE__": pa_simple_write() failed: %s\n", pa_strerror(error));
-            exit(0);
+    }
 
-        }
+
+
+    //Conversion of  ulaw8 to pcm16 (G711 codec)
+    for(i=0;i<sizeof(inbuffer)/sizeof(inbuffer[0]);i++)
+    {
+        outbuffer[i]=Snack_Mulaw2Lin(inbuffer[i]);
+    }
+
+
+
+
+
+    //printf("read completed%ld\n",r);
+    /* ... and play it */
+    if (pa_simple_write(l, outbuffer, sizeof(outbuffer), &error) < 0) {
+        fprintf(stderr, __FILE__": pa_simple_write() failed: %s\n", pa_strerror(error));
+        exit(0);
+
+    }
 }
 
 
@@ -131,7 +147,7 @@ int main(int argc, char *argv[])    //usage: <./name><ip><port no>
 
     /* Start the timer */
 
-    freq_nanosecs = 100;
+    freq_nanosecs = 500;
     its.it_value.tv_sec = freq_nanosecs / 1000000000;
     its.it_value.tv_nsec = freq_nanosecs % 1000000000;
     its.it_interval.tv_sec = its.it_value.tv_sec;

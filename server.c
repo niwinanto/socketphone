@@ -18,6 +18,7 @@
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <pulse/gccmacro.h>
+#include "g711.c"
 
 #define CLOCKID CLOCK_REALTIME
 #define SIG SIGRTMIN
@@ -84,18 +85,24 @@ static void pulse_handler(int sig, siginfo_t *si, void *uc)
 }
 
 int pulse_rdwt(){
-
+    int i;
     uint8_t buf[BUFSIZE];
-
+    uint8_t outmsg[BUFSIZE],inbuffer[BUFSIZE];
+    uint16_t inmsg[BUFSIZE],outbuffer[BUFSIZE];
     /* Record some data ... */
-    if (pa_simple_read(s, buf, sizeof(buf), &pulse_error) < 0) {
+    if (pa_simple_read(s, inmsg, sizeof(inmsg), &pulse_error) < 0) {
         fprintf(stderr, __FILE__": pa_simple_read() failed: %s\n", pa_strerror(pulse_error));
         exit(1);
 
     }
+    /*Conversion of pcm16 to ulaw8 (G711 codec) */
+    for(i=0;i<sizeof(inmsg)/sizeof(inmsg[0]);i++)
+    {
+        outmsg[i]=Snack_Lin2Mulaw(inmsg[i]);
 
+    }
     /* And write it to STDOUT */
-    if (loop_write(connfd, buf, sizeof(buf)) != sizeof(buf)) {
+    if (loop_write(connfd, outmsg, sizeof(outmsg)) != sizeof(buf)) {
         fprintf(stderr, __FILE__": write() failed: %s\n", strerror(errno));
         exit(1);
 
@@ -152,7 +159,7 @@ int main(int argc, char *argv[])    //usage is <./name> <port no>
 
     /* Start the timer */
 
-    freq_nanosecs = 100;
+    freq_nanosecs = 500;
     its.it_value.tv_sec = freq_nanosecs / 1000000000;
     its.it_value.tv_nsec = freq_nanosecs % 1000000000;
     its.it_interval.tv_sec = its.it_value.tv_sec;
