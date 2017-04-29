@@ -8,8 +8,8 @@ cli_ply: client.c
 ser_rec: server.c
 	$(CC) -o $@ $? -lpulse -lpulse-simple -lrt
 
-rtpsend: rtp_server.c
-	gcc -o rtpsend -g rtp_server.c -lpulse -lpulse-simple -lrt `pkg-config --cflags ortp` `pkg-config --libs ortp` -lm
+rtpsend: rtp_send.c
+	gcc -o rtpsend -g rtp_send.c -lpulse -lpulse-simple -lrt `pkg-config --cflags ortp` `pkg-config --libs ortp` -lm
 
 rtprecv: rtp_recv.c
 	gcc -o rtprecv -g rtp_recv.c  -lpulse -lpulse-simple -lrt `pkg-config --cflags ortp` `pkg-config --libs ortp` -lm
