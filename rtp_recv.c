@@ -15,6 +15,8 @@
 #include<signal.h>
 #include <time.h>
 #include "g711.c"
+#include <ortp/ortp.h>
+#include <bctoolbox/vfs.h>
 
 #include <pulse/simple.h>
 #include <pulse/error.h>
@@ -25,40 +27,43 @@
 
 #define errExit(msg)    do { perror(msg); exit(EXIT_FAILURE); \
 } while (0)
-#define BUFSIZE 1024
-int sockfd = 0;
+#define BUFSIZE 160
 pa_simple *l = NULL;
+int cond =0;
+RtpSession *session;
+uint32_t ts=0;
 
+void ssrc_cb(RtpSession *session){
+    printf("hey, the ssrc has changed !\n");
+}
 void nw_handler(int signo){          //signal handler
     char a[2];
+    cond = 0;
     if(signo == SIGINT){             //check for ctl + c signal
-        printf("pogram received a ctrl+c");
-        printf("Are you sure[y/n]");
-        scanf("%c",a);
-        if(!strcmp("y",a)){
-            close(sockfd);           //close socket in case of yes
-            exit(0);
-        }
-        else
-            printf("continuing");
+            rtp_session_destroy(session);
+            ortp_exit();
+            exit(-1);
     }
 }
 
 int pulse_rdply(){
-    int error,i;
+    int error,err=1,i,h=1;
     uint8_t buf[BUFSIZE];
     uint16_t inmsg[BUFSIZE],outbuffer[BUFSIZE];
     uint8_t outmsg[BUFSIZE],inbuffer[BUFSIZE];
         ssize_t r;
     /* Read some data ... */
-    if ((r = read(sockfd, inbuffer, sizeof(inbuffer))) < 0) {
-        fprintf(stderr, __FILE__": read() failed: %s\n", strerror(errno));
-        exit(0);
 
-    }
+			err=rtp_session_recv_with_ts(session,inbuffer,sizeof(inbuffer),ts,&h);
+			/* this is to avoid to write to disk some silence before the first RTP packet is returned*/
 
-
-
+		ts+=sizeof(inbuffer);
+    //rtp_session_recm_with_ts(session,inbuffer,sizeof(inbuffer),ts,&h);
+    err = rtp_session_recv_with_ts(session,inbuffer,sizeof(inbuffer),ts,&h);
+    //printf("%d",error);
+    if(err>0){
+    ts+=sizeof(inbuffer);
+    printf("%d %d\n",ts,err);
     //Conversion of  ulaw8 to pcm16 (G711 codec)
     for(i=0;i<sizeof(inbuffer)/sizeof(inbuffer[0]);i++)
     {
@@ -76,24 +81,20 @@ int pulse_rdply(){
         exit(0);
 
     }
+    }
 }
 
 
 static void pulse_handler(int sig, siginfo_t *si, void *uc)
 {
-    /* Note: calling printf() from a signal handler is not
-     *               strictly correct, since printf() is not async-signal-safe;
-     *                             see signal(7) */
-
-//    printf("Caught signal %d\n", sig);
     pulse_rdply();
-    //signal(sig, SIG_IGN);
 
 }
 
 int main(int argc, char *argv[])    //usage: <./name><ip><port no>
 {
    // int  n = 0,i;
+    int local_port;
     struct sockaddr_in serv_addr;
     timer_t timerid;
     struct sigevent sev;
@@ -114,13 +115,13 @@ int main(int argc, char *argv[])    //usage: <./name><ip><port no>
     int error;
     int fd;
 
-    if(argc != 3)                   //check for correct usage/arguments
+    if(argc < 2)                   //check for correct usage/arguments
     {
-        printf("\n Usage: %s <ip of server> <port number> \n",argv[0]);
+        printf("\n Usage: %s  <port number> \n",argv[0]);
         return 1;
 
     }
-
+    local_port = atoi(argv[2]);
     sa.sa_flags = SA_SIGINFO;
     sa.sa_sigaction = pulse_handler;
     sigemptyset(&sa.sa_mask);
@@ -147,7 +148,7 @@ int main(int argc, char *argv[])    //usage: <./name><ip><port no>
 
     /* Start the timer */
 
-    freq_nanosecs = 1000000;
+    freq_nanosecs = 6000;
     its.it_value.tv_sec = freq_nanosecs / 1000000000;
     its.it_value.tv_nsec = freq_nanosecs % 1000000000;
     its.it_interval.tv_sec = its.it_value.tv_sec;
@@ -156,89 +157,68 @@ int main(int argc, char *argv[])    //usage: <./name><ip><port no>
     if(signal(SIGINT,nw_handler) == SIG_ERR)    //signal handler callback functio
         printf("cant acces SIDINT");
 
-    //memset(recvBuff, '0',sizeof(recvBuff));
-    if((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)      //create socket
-    {
-        printf("\n Error : Could not create socket \n");
-        return 1;
-
-    }
-
-    //memset(&serv_addr, '0', sizeof(serv_addr));
-
-    serv_addr.sin_family = AF_INET;         //set socket IPv4 protocol
-    serv_addr.sin_port = htons(atoi(argv[2]));//set port no
-
-    if(inet_pton(AF_INET, argv[1], &serv_addr.sin_addr)<=0) //give settings,ip and port no to the opened socket struct
-    {
-        printf("\n inet_pton error occured\n");
-        return 1;
-
-    }
-
-    if( connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0 ) //connect to the server
-    {
-        printf("\n Error : Connect Failed \n");
-        return 1;
-
-    }
-    printf("connected\n");
-
+    ortp_init();
+    ortp_scheduler_init();
+    ortp_set_log_level_mask(ORTP_DEBUG|ORTP_MESSAGE|ORTP_WARNING|ORTP_ERROR);
+    session = rtp_session_new(RTP_SESSION_RECVONLY);
+    rtp_session_set_scheduling_mode(session,1);
+    rtp_session_set_blocking_mode(session,1);
+    rtp_session_set_local_addr(session,argv[1],local_port,local_port+1);
+    rtp_session_set_connected_mode(session,TRUE);
+    rtp_session_set_symmetric_rtp(session,TRUE);
+    rtp_session_set_payload_type(session,0);
+    //rtp_session_signal_connect(session,"ssrc changed",(RtpCallback)ssrc_cb,0);
+    //rtp_session_signal_connect(session,"ssrc changed",(RtpCallback)rtp_session_reset,0);
     /* Create a new playback stream */
     if (!(l = pa_simple_new(NULL, argv[0], PA_STREAM_PLAYBACK, NULL, "playback", &ss, NULL, NULL, &error))) {
         fprintf(stderr, __FILE__": pa_simple_new() failed: %s\n", pa_strerror(error));
         goto finish;
-
     }
 
-        if (timer_settime(timerid, 0, &its, NULL) == -1)
+       /* if (timer_settime(timerid, 0, &its, NULL) == -1)
             errExit("timer_settime");
         if (sigprocmask(SIG_UNBLOCK, &mask, NULL) == -1)
             errExit("sigprocmask");
-
+*/
         while(1){
 
-#if 0
-        pa_usec_t latency;
+            int error,err=1,i,h=1;
+            uint8_t buf[BUFSIZE];
+            uint16_t inmsg[BUFSIZE],outbuffer[BUFSIZE];
+            uint8_t outmsg[BUFSIZE],inbuffer[BUFSIZE];
+            ssize_t r;
+            /* Read some data ... */
 
-        if ((latency = pa_simple_get_latency(s, &error)) == (pa_usec_t) -1) {
-            fprintf(stderr, __FILE__": pa_simple_get_latency() failed: %s\n", pa_strerror(error));
-            goto finish;
+            err=rtp_session_recv_with_ts(session,inbuffer,sizeof(inbuffer),ts,&h);
+            /* this is to avoid to write to disk some silence before the first RTP packet is returned*/
 
+            ts+=sizeof(inbuffer);
+            //rtp_session_recm_with_ts(session,inbuffer,sizeof(inbuffer),ts,&h);
+            err = rtp_session_recv_with_ts(session,inbuffer,sizeof(inbuffer),ts,&h);
+            //printf("%d",error);
+            if(err>0){
+                ts+=sizeof(inbuffer);
+                printf("%d %d\n",ts,err);
+                //Conversion of  ulaw8 to pcm16 (G711 codec)
+                for(i=0;i<sizeof(inbuffer)/sizeof(inbuffer[0]);i++)
+                {
+                    outbuffer[i]=Snack_Mulaw2Lin(inbuffer[i]);
+                }
+
+
+
+
+
+                //printf("read completed%ld\n",r);
+                /* ... and play it */
+                if (pa_simple_write(l, outbuffer, sizeof(outbuffer), &error) < 0) {
+                    fprintf(stderr, __FILE__": pa_simple_write() failed: %s\n", pa_strerror(error));
+                    exit(0);
+
+                }
+            }
         }
 
-        fprintf(stderr, "%0.0f usec    \r", (float)latency);
-#endif
-
-#if 0
-        uint8_t buf[BUFSIZE];
-        ssize_t r;
-        /* Read some data ... */
-        if ((r = read(sockfd, buf, sizeof(buf))) < 0) {
-            fprintf(stderr, __FILE__": read() failed: %s\n", strerror(errno));
-            exit(0);
-
-        }
-        printf("read completed%ld\n",r);
-       // printf("read completed\n");
-        /* ... and play it */
-        if (pa_simple_write(s, buf, (size_t) r, &error) < 0) {
-            fprintf(stderr, __FILE__": pa_simple_write() failed: %s\n", pa_strerror(error));
-            printf("hi");
-            exit(0);
-
-        }
-#endif
-        }
-
-    /* Make sure that every single sample was played */
-    if (pa_simple_drain(l, &error) < 0) {
-        fprintf(stderr, __FILE__": pa_simple_drain() failed: %s\n", pa_strerror(error));
-        goto finish;
-
-    }
-
-    ret = 0;
 
 finish:
 

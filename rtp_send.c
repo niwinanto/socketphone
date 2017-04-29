@@ -19,68 +19,55 @@
 #include <pulse/error.h>
 #include <pulse/gccmacro.h>
 #include "g711.c"
+#include <ortp/ortp.h>
 
 #define CLOCKID CLOCK_REALTIME
 #define SIG SIGRTMIN
-
 #define errExit(msg)    do { perror(msg); exit(EXIT_FAILURE); \
 } while (0)
-int listenfd = 0,connfd = 0;
-#define BUFSIZE 1024
+#define BUFSIZE 160
+
 pa_simple *s = NULL;
 int pulse_error;
 int pulse_rdwt();
+int runcond=1;
+RtpSession *session;
+uint32_t user_ts=0;
+
+
 /* A simple routine calling UNIX write() in a loop */
 static ssize_t loop_write(int fd, const void*data, size_t size) {
     ssize_t ret = 0;
-    // printf("start %d\n",(int)size);
-
     while (size > 0) {
         ssize_t r;
-
         if ((r = write(fd, data, size)) < 0)
             return r;
-
         if (r == 0)
             break;
-
         ret += r;
         data = (const uint8_t*) data + r;
         size -= (size_t) r;
-        // close(fd);
-        //   printf("end\n");
-
     }
-
     return ret;
-
 }
 
+
+/****************************/
 void nw_handler(int signo){         //signal handler
     char a[2];
     if(signo == SIGINT){
-        printf("pogram received a ctrl+c");
-        printf("Are you sure[y/n]");
-        scanf("%c",a);
-        if(!strcmp("y",a)){
-            close(connfd);      //if continue with ctl + c close the client socket
-            close(listenfd);    //close the server socket
-            exit(0);
-        }
-        else
-            printf("continuing");
+        runcond = 0;
+        rtp_session_destroy(session);
+        ortp_exit();
+        exit(0);
     }
 }
+/***************************/
 
-static void pulse_handler(int sig, siginfo_t *si, void *uc)
+/**************************/
+void pulse_handler(int sig, siginfo_t *si, void *uc)
 {
-    /* Note: calling printf() from a signal handler is not
-     *               strictly correct, since printf() is not async-signal-safe;
-     *                             see signal(7) */
-
-//    printf("Caught signal %d\n", sig);
     pulse_rdwt();
-    //signal(sig, SIG_IGN);
 
 }
 
@@ -93,27 +80,24 @@ int pulse_rdwt(){
     if (pa_simple_read(s, inmsg, sizeof(inmsg), &pulse_error) < 0) {
         fprintf(stderr, __FILE__": pa_simple_read() failed: %s\n", pa_strerror(pulse_error));
         exit(1);
-
     }
     /*Conversion of pcm16 to ulaw8 (G711 codec) */
     for(i=0;i<sizeof(inmsg)/sizeof(inmsg[0]);i++)
     {
         outmsg[i]=Snack_Lin2Mulaw(inmsg[i]);
-
     }
-    /* And write it to STDOUT */
-    if (loop_write(connfd, outmsg, sizeof(outmsg)) != sizeof(buf)) {
-        fprintf(stderr, __FILE__": write() failed: %s\n", strerror(errno));
-        exit(1);
 
-    }
+    int a = rtp_session_send_with_ts(session,outmsg,sizeof(outmsg),user_ts);
+    user_ts+=sizeof(outmsg);
+
+    //    printf("%d\n",(int)user_ts);
 }
-
 
 int main(int argc, char *argv[])    //usage is <./name> <port no>
 {
     struct sockaddr_in serv_addr;
     timer_t timerid;
+    char *ssrc;
     struct sigevent sev;
     struct itimerspec its;
     long long freq_nanosecs;
@@ -126,9 +110,9 @@ int main(int argc, char *argv[])    //usage is <./name> <port no>
     };
     int fd,n,error,ret = 1;
 
-    if(argc != 2)           //check for proper command line arguments
+    if(argc < 3)           //check for proper command line arguments
     {
-        printf("\n Usage: %s  <port number> \n",argv[0]);
+        printf("\n Usage: %s  <ipv4 address> <port number> \n",argv[0]);
         return 1;
 
     }
@@ -159,7 +143,7 @@ int main(int argc, char *argv[])    //usage is <./name> <port no>
 
     /* Start the timer */
 
-    freq_nanosecs = 1000;
+    freq_nanosecs = 6000;
     its.it_value.tv_sec = freq_nanosecs / 1000000000;
     its.it_value.tv_nsec = freq_nanosecs % 1000000000;
     its.it_interval.tv_sec = its.it_value.tv_sec;
@@ -168,50 +152,55 @@ int main(int argc, char *argv[])    //usage is <./name> <port no>
     if(signal(SIGINT,nw_handler) == SIG_ERR)    //signal handler call
         printf("cant acces SIDINT");
 
+    /*rtp server*/
+    ortp_init();
+    ortp_scheduler_init();
+    ortp_set_log_level_mask(ORTP_MESSAGE|ORTP_WARNING|ORTP_ERROR);
+    session = rtp_session_new(RTP_SESSION_SENDONLY);
+    rtp_session_set_scheduling_mode(session,1);
+    rtp_session_set_blocking_mode(session,1);
+    rtp_session_set_connected_mode(session,TRUE);
+    // rtp_session_set_local_addr(session,argv[1],atoi(argv[2]),atoi(argv[2])+1);
+    rtp_session_set_remote_addr(session,argv[1],atoi(argv[2]));
+    rtp_session_set_payload_type(session,0);
 
+    ssrc = getenv("SSRC");
+    if(ssrc != NULL){
+        printf("using SSRC=%i.\n",atoi(ssrc));
+        rtp_session_set_ssrc(session,atoi(ssrc));
+    }
 
-    listenfd = socket(AF_INET, SOCK_STREAM, 0);     //make the socket
-    //memset(&serv_addr, '0', sizeof(serv_addr));
-    //memset(sendBuff, '0', sizeof(sendBuff));
-    serv_addr.sin_family = AF_INET;                 //socket protocol and settings:IPv4
-    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    serv_addr.sin_port = htons(atoi(argv[1]));      //set port number
-    bind(listenfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr));        //bind the socket with the socket settings struct
-    listen(listenfd, 10);       //set the connection limit to 10
+    /* Create the recording stream */
+    if (!(s = pa_simple_new(NULL, argv[0], PA_STREAM_RECORD, NULL, "record", &ss, NULL, NULL, &error))) {
+        fprintf(stderr, __FILE__": pa_simple_new() failed: %s\n", pa_strerror(error));
+        goto finish;
 
+    }
+    /*if (timer_settime(timerid, 0, &its, NULL) == -1)
+        errExit("timer_settime");
+    if (sigprocmask(SIG_UNBLOCK, &mask, NULL) == -1)
+        errExit("sigprocmask");
+*/
+    while(1){
 
-    while(1)
-    {
-        printf("waiting for connection\n");
-        connfd = accept(listenfd, (struct sockaddr*)NULL, NULL);//connect to the client
-        printf("connected\n");
-
-        /* Create the recording stream */
-        if (!(s = pa_simple_new(NULL, argv[0], PA_STREAM_RECORD, NULL, "record", &ss, NULL, NULL, &error))) {
-            fprintf(stderr, __FILE__": pa_simple_new() failed: %s\n", pa_strerror(error));
-            goto finish;
-
+        int i;
+        uint8_t buf[BUFSIZE];
+        uint8_t outmsg[BUFSIZE],inbuffer[BUFSIZE];
+        uint16_t inmsg[BUFSIZE],outbuffer[BUFSIZE];
+        /* Record some data ... */
+        if (pa_simple_read(s, inmsg, sizeof(inmsg), &pulse_error) < 0) {
+            fprintf(stderr, __FILE__": pa_simple_read() failed: %s\n", pa_strerror(pulse_error));
+            exit(1);
         }
-        if (timer_settime(timerid, 0, &its, NULL) == -1)
-            errExit("timer_settime");
-        if (sigprocmask(SIG_UNBLOCK, &mask, NULL) == -1)
-            errExit("sigprocmask");
-
-        while(1){
-
-            // write(connfd, sendBuff, strlen(sendBuff)+1);        //write to the client socket
-
-#if 0
-            if(n == 0){
-                printf("\n******** server terminated *********"); //if server terminate detect and terminate
-                close(connfd);
-                exit(1);
-            }
-
-#endif
+        /*Conversion of pcm16 to ulaw8 (G711 codec) */
+        for(i=0;i<sizeof(inmsg)/sizeof(inmsg[0]);i++)
+        {
+            outmsg[i]=Snack_Lin2Mulaw(inmsg[i]);
         }
-        close(connfd);
-        sleep(1);
+
+        int a = rtp_session_send_with_ts(session,outmsg,sizeof(outmsg),user_ts);
+        user_ts+=sizeof(outmsg);
+
     }
 
 finish:
